@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { isValidJobId } = require('../utils/ids');
 const jobStore = require('../services/jobStore');
-const localStorageClient = require('../services/localStorageClient');
+const mongoClient = require('../services/mongoClient');
 const { asyncHandler, createError } = require('../middleware/errors');
 
 const router = express.Router();
@@ -68,24 +68,17 @@ router.post('/callback', upload.single('csv'), asyncHandler(async (req, res) => 
     // Read CSV file
     const csvData = fs.readFileSync(csvPath);
     
-    // Generate storage key
-    const storageKey = localStorageClient.generateKey(jobId, job.filenamePdf);
+    // Generate filename for MongoDB storage
+    const filename = originalname || `${job.filenamePdf.replace('.pdf', '.csv')}`;
     
-    // Store CSV locally
-    const storageResult = await localStorageClient.putCsv({
-      key: storageKey,
-      body: csvData,
-      contentType: 'text/csv'
-    });
+    // Store CSV in MongoDB
+    const fileId = await mongoClient.storeCSV(jobId, csvData, filename);
 
     // Generate download URL
-    const downloadUrl = await localStorageClient.getDownloadUrl({
-      key: storageKey,
-      expiresInSeconds: 3600 // Not used for local storage but kept for compatibility
-    });
+    const downloadUrl = await mongoClient.generateDownloadUrl(jobId);
 
     // Mark job as completed
-    jobStore.completeJob(jobId, storageKey, downloadUrl);
+    jobStore.completeJob(jobId, fileId, downloadUrl);
 
     // Clean up temporary file
     try {
@@ -94,13 +87,13 @@ router.post('/callback', upload.single('csv'), asyncHandler(async (req, res) => 
       console.warn(`⚠️  Failed to cleanup temp CSV file: ${cleanupError.message}`);
     }
 
-    console.log(`✅ Job completed: ${jobId} - CSV stored locally: ${storageKey}`);
+    console.log(`✅ Job completed: ${jobId} - CSV stored in MongoDB: ${fileId}`);
 
     res.json({
       ok: true,
       jobId,
       message: 'CSV processed and stored successfully',
-      storageKey,
+      fileId,
       downloadUrl
     });
 

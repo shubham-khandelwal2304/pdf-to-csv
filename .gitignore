@@ -13,7 +13,7 @@ yarn-error.log*
 
 # Temporary files
 backend/tmp/
-backend/storage/csv/
+backend/storage/
 *.tmp
 *.temp
 

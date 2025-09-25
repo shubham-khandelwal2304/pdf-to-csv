@@ -1,93 +1,75 @@
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const localStorageClient = require('../services/localStorageClient');
+const mongoClient = require('../services/mongoClient');
 const { asyncHandler, createError } = require('../middleware/errors');
 
 const router = express.Router();
 
 /**
- * GET /api/files/download/:encodedKey - Download CSV file
+ * GET /api/files/download/:fileId - Download CSV file from MongoDB
  */
-router.get('/download/:encodedKey', asyncHandler(async (req, res) => {
-  const { encodedKey } = req.params;
+router.get('/download/:fileId', asyncHandler(async (req, res) => {
+  const { fileId } = req.params;
   
-  // Decode the file key
-  let fileKey;
-  try {
-    fileKey = decodeURIComponent(encodedKey);
-  } catch (error) {
-    throw createError('Invalid file key', 400, 'INVALID_FILE_KEY');
-  }
-
-  // Get file path
-  const filePath = localStorageClient.getFilePath(fileKey);
-  
-  // Check if file exists
-  if (!fs.existsSync(filePath)) {
-    throw createError('File not found', 404, 'FILE_NOT_FOUND');
+  if (!fileId) {
+    throw createError('File ID is required', 400, 'MISSING_FILE_ID');
   }
 
   try {
-    // Get file stats
-    const stats = fs.statSync(filePath);
+    // Get file stream from MongoDB
+    const { stream, filename, contentType, size } = await mongoClient.getCSVStream(fileId);
     
-    // Extract filename for download
-    const filename = localStorageClient.extractFilename(fileKey);
-    
-    console.log(`📥 Serving file download: ${fileKey} (${(stats.size / 1024).toFixed(2)}KB)`);
+    console.log(`📥 Serving MongoDB file download: ${filename} (${(size / 1024).toFixed(2)}KB)`);
 
     // Set response headers
-    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Content-Length', size);
     res.setHeader('Cache-Control', 'private, max-age=3600'); // Cache for 1 hour
 
-    // Stream the file
-    const fileStream = fs.createReadStream(filePath);
-    
-    fileStream.on('error', (error) => {
-      console.error(`❌ File stream error: ${error.message}`);
+    // Handle stream errors
+    stream.on('error', (error) => {
+      console.error(`❌ MongoDB stream error: ${error.message}`);
       if (!res.headersSent) {
         res.status(500).json({ error: 'File read error' });
       }
     });
 
-    fileStream.pipe(res);
+    // Pipe the MongoDB stream to response
+    stream.pipe(res);
 
   } catch (error) {
-    console.error(`❌ Failed to serve file: ${error.message}`);
+    console.error(`❌ Failed to serve file from MongoDB: ${error.message}`);
+    if (error.message.includes('not found')) {
+      throw createError('File not found', 404, 'FILE_NOT_FOUND');
+    }
     throw createError('Failed to serve file', 500, 'FILE_SERVE_ERROR');
   }
 }));
 
 /**
- * GET /api/files/stats - Get storage statistics (development only)
+ * GET /api/files/stats - Get MongoDB storage statistics (development only)
  */
 if (process.env.NODE_ENV !== 'production') {
   router.get('/stats', asyncHandler(async (req, res) => {
-    const stats = await localStorageClient.getStats();
+    const stats = await mongoClient.getStats();
     res.json({
       storage: stats,
-      type: 'local-filesystem'
+      type: 'mongodb-gridfs'
     });
   }));
 }
 
 /**
- * POST /api/files/cleanup - Cleanup old files (development only)
+ * GET /api/files/health - MongoDB health check
  */
-if (process.env.NODE_ENV !== 'production') {
-  router.post('/cleanup', asyncHandler(async (req, res) => {
-    const { hoursOld = 24 } = req.body;
-    const deletedCount = await localStorageClient.cleanup(hoursOld);
-    
-    res.json({
-      message: `Cleanup completed`,
-      deletedFiles: deletedCount,
-      hoursOld
-    });
-  }));
-}
+router.get('/health', asyncHandler(async (req, res) => {
+  const isHealthy = await mongoClient.healthCheck();
+  
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'healthy' : 'unhealthy',
+    service: 'mongodb-storage',
+    timestamp: new Date().toISOString()
+  });
+}));
 
 module.exports = router;

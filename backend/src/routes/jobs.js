@@ -5,7 +5,7 @@ const fs = require('fs');
 const { generateJobId, isValidJobId } = require('../utils/ids');
 const jobStore = require('../services/jobStore');
 const n8nClient = require('../services/n8nClient');
-const localStorageClient = require('../services/localStorageClient');
+const mongoClient = require('../services/mongoClient');
 const { asyncHandler, createError } = require('../middleware/errors');
 
 const router = express.Router();
@@ -141,11 +141,8 @@ router.get('/:jobId/download-url', asyncHandler(async (req, res) => {
   }
 
   try {
-    // Generate fresh download URL
-    const downloadUrl = await localStorageClient.getDownloadUrl({
-      key: job.r2Key, // Using r2Key field name for compatibility
-      expiresInSeconds: 3600 // Not used for local storage but kept for compatibility
-    });
+    // Generate fresh download URL from MongoDB
+    const downloadUrl = await mongoClient.generateDownloadUrl(jobId);
 
     // Update job with new download URL
     jobStore.updateJob(jobId, { presignedUrl: downloadUrl });
