@@ -68,7 +68,7 @@ async function apiRequest(url, options = {}) {
 /**
  * Upload PDF file and start conversion
  * @param {File} file - PDF file to upload
- * @returns {Promise<{jobId: string, message: string, filename: string}>}
+ * @returns {Promise<{jobId: string, message: string, filename: string, execution?: object}>}
  */
 export async function uploadPdf(file) {
   if (!file) {
@@ -86,10 +86,36 @@ export async function uploadPdf(file) {
   const formData = new FormData();
   formData.append('file', file);
 
-  return apiRequest('/api/jobs', {
+  const response = await apiRequest('/api/jobs', {
     method: 'POST',
     body: formData
   });
+
+  // Store job details in local storage for persistence
+  if (response.jobId) {
+    const jobData = {
+      jobId: response.jobId,
+      filename: response.filename,
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      execution: response.execution || null
+    };
+    localStorage.setItem(`job_${response.jobId}`, JSON.stringify(jobData));
+    
+    // Also store in a list for easy retrieval
+    const jobList = getStoredJobList();
+    if (!jobList.find(id => id === response.jobId)) {
+      jobList.unshift(response.jobId); // Add to front
+      // Keep only last 10 jobs
+      if (jobList.length > 10) {
+        const removedJob = jobList.pop();
+        localStorage.removeItem(`job_${removedJob}`);
+      }
+      localStorage.setItem('pdf_csv_jobs', JSON.stringify(jobList));
+    }
+  }
+
+  return response;
 }
 
 /**
@@ -119,6 +145,42 @@ export async function getDownloadUrl(jobId) {
 }
 
 /**
+ * Get n8n execution details for a job
+ * @param {string} jobId - Job ID
+ * @returns {Promise<{jobId: string, execution: object, jobStatus: string}>}
+ */
+export async function getExecutionDetails(jobId) {
+  if (!jobId) {
+    throw new ApiError('Job ID is required', 400, 'NO_JOB_ID');
+  }
+
+  return apiRequest(`/api/jobs/${jobId}/execution`);
+}
+
+/**
+ * Get all files from MongoDB
+ * @returns {Promise<{files: Array, totalFiles: number, totalSize: number, formattedTotalSize: string}>}
+ */
+export async function getAllFiles() {
+  return apiRequest('/api/files');
+}
+
+/**
+ * Delete a file from MongoDB
+ * @param {string} fileId - File ID to delete
+ * @returns {Promise<{success: boolean, message: string, fileId: string, filename: string}>}
+ */
+export async function deleteFile(fileId) {
+  if (!fileId) {
+    throw new ApiError('File ID is required', 400, 'NO_FILE_ID');
+  }
+
+  return apiRequest(`/api/files/${fileId}`, {
+    method: 'DELETE'
+  });
+}
+
+/**
  * Poll job status until completion
  * @param {string} jobId - Job ID
  * @param {function} onStatusUpdate - Callback for status updates
@@ -140,6 +202,16 @@ export async function pollJobStatus(jobId, onStatusUpdate = null, intervalMs = 2
         }
 
         const status = await getJobStatus(jobId);
+        
+        // Update local storage with latest status
+        updateStoredJob(jobId, {
+          status: status.status,
+          ready: status.ready,
+          execution: status.execution || null,
+          error: status.error || null,
+          downloadUrl: status.downloadUrl || null,
+          updatedAt: new Date().toISOString()
+        });
         
         if (onStatusUpdate) {
           onStatusUpdate(status);
@@ -165,6 +237,80 @@ export async function pollJobStatus(jobId, onStatusUpdate = null, intervalMs = 2
  */
 export async function checkHealth() {
   return apiRequest('/health');
+}
+
+/**
+ * Get stored job list from local storage
+ * @returns {string[]} Array of job IDs
+ */
+function getStoredJobList() {
+  try {
+    const stored = localStorage.getItem('pdf_csv_jobs');
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.warn('Failed to parse stored job list:', error);
+    return [];
+  }
+}
+
+/**
+ * Get stored job data from local storage
+ * @param {string} jobId - Job ID
+ * @returns {object|null} Job data or null if not found
+ */
+export function getStoredJob(jobId) {
+  try {
+    const stored = localStorage.getItem(`job_${jobId}`);
+    return stored ? JSON.parse(stored) : null;
+  } catch (error) {
+    console.warn('Failed to parse stored job data:', error);
+    return null;
+  }
+}
+
+/**
+ * Update stored job data in local storage
+ * @param {string} jobId - Job ID
+ * @param {object} updates - Updates to apply
+ */
+export function updateStoredJob(jobId, updates) {
+  try {
+    const existing = getStoredJob(jobId) || {};
+    const updated = { ...existing, ...updates, updatedAt: new Date().toISOString() };
+    localStorage.setItem(`job_${jobId}`, JSON.stringify(updated));
+  } catch (error) {
+    console.warn('Failed to update stored job data:', error);
+  }
+}
+
+/**
+ * Get all stored jobs
+ * @returns {object[]} Array of job data objects
+ */
+export function getAllStoredJobs() {
+  const jobList = getStoredJobList();
+  return jobList.map(jobId => getStoredJob(jobId)).filter(Boolean);
+}
+
+/**
+ * Clear old completed jobs from local storage
+ * @param {number} maxAge - Maximum age in milliseconds (default: 24 hours)
+ */
+export function cleanupStoredJobs(maxAge = 24 * 60 * 60 * 1000) {
+  const cutoff = new Date(Date.now() - maxAge);
+  const jobList = getStoredJobList();
+  const activeJobs = [];
+
+  jobList.forEach(jobId => {
+    const job = getStoredJob(jobId);
+    if (job && new Date(job.createdAt) > cutoff) {
+      activeJobs.push(jobId);
+    } else {
+      localStorage.removeItem(`job_${jobId}`);
+    }
+  });
+
+  localStorage.setItem('pdf_csv_jobs', JSON.stringify(activeJobs));
 }
 
 export { ApiError };

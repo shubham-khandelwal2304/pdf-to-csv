@@ -7,7 +7,8 @@ const StatusBar = ({
   onDownload, 
   onReset, 
   isPolling,
-  downloadUrl 
+  downloadUrl,
+  execution 
 }) => {
   const getStatusDisplay = () => {
     switch (status) {
@@ -66,6 +67,39 @@ const StatusBar = ({
         {filename && (
           <div className="mb-4 text-gray-600">
             <span className="font-medium text-gray-800">File:</span> {filename}
+          </div>
+        )}
+
+        {execution && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="text-sm text-blue-800">
+              <div className="font-medium mb-1">🔄 n8n Workflow Execution</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="font-medium">ID:</span> {execution.id}
+                </div>
+                <div>
+                  <span className="font-medium">Status:</span> 
+                  <span className={`ml-1 px-2 py-0.5 rounded-full text-xs ${
+                    execution.status === 'processing' ? 'bg-yellow-100 text-yellow-800' :
+                    execution.status === 'completed' ? 'bg-green-100 text-green-800' :
+                    'bg-blue-100 text-blue-800'
+                  }`}>
+                    {execution.status}
+                  </span>
+                </div>
+                {execution.message && (
+                  <div className="md:col-span-2">
+                    <span className="font-medium">Message:</span> {execution.message}
+                  </div>
+                )}
+                {execution.mode && (
+                  <div>
+                    <span className="font-medium">Mode:</span> {execution.mode}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
         
