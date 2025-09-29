@@ -14,9 +14,9 @@ const StatusBar = ({
     switch (status) {
       case 'processing':
         return {
-          icon: '⏳',
-          text: 'Converting PDF to CSV...',
-          className: 'status-processing'
+          icon: downloadUrl ? '✅' : '⏳',
+          text: downloadUrl ? 'Conversion completed!' : 'Converting PDF to CSV...',
+          className: downloadUrl ? 'status-success' : 'status-processing'
         };
       case 'done':
         return {
@@ -44,7 +44,7 @@ const StatusBar = ({
   const getStatusStyles = () => {
     switch (status) {
       case 'processing':
-        return 'border-l-4 border-blue-500 bg-blue-50/80';
+        return downloadUrl ? 'border-l-4 border-green-500 bg-green-50/80' : 'border-l-4 border-blue-500 bg-blue-50/80';
       case 'done':
         return 'border-l-4 border-green-500 bg-green-50/80';
       case 'error':
@@ -109,7 +109,7 @@ const StatusBar = ({
               <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full animate-progress"></div>
             </div>
             <p className="text-sm text-gray-600 italic">
-              Please wait while we process your PDF...
+              {downloadUrl ? 'Processing complete! Download is ready.' : 'Please wait while we process your PDF...'}
             </p>
           </div>
         )}
@@ -123,7 +123,7 @@ const StatusBar = ({
         )}
         
         <div className="flex flex-wrap gap-3">
-          {status === 'done' && (
+          {(status === 'done' || downloadUrl) && (
             <button 
               className="btn btn-success flex items-center gap-2"
               onClick={onDownload}

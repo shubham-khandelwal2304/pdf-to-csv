@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
+import { useJobEvents } from '../hooks/useJobEvents';
 
 const Uploader = ({ onUpload, disabled }) => {
   const [isDragActive, setIsDragActive] = useState(false);

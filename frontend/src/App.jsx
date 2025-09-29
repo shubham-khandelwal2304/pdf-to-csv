@@ -2,10 +2,11 @@ import React, { useState, useCallback, useEffect } from 'react';
 import Uploader from './components/Uploader';
 import StatusBar from './components/StatusBar';
 import Sidebar from './components/Sidebar';
+import { useJobEvents } from './hooks/useJobEvents';
 import { 
   uploadPdf, 
-  pollJobStatus, 
   getDownloadUrl, 
+  getJobStatus,
   ApiError, 
   getAllStoredJobs, 
   cleanupStoredJobs,
@@ -36,75 +37,128 @@ function App() {
     // If there's a processing job, resume it
     const processingJob = jobs.find(job => job.status === 'processing');
     if (processingJob && !jobId) {
+      console.log('Resuming processing job:', processingJob.jobId);
       setJobId(processingJob.jobId);
       setFilename(processingJob.filename);
       setStatus(processingJob.status);
       setExecution(processingJob.execution);
       
-      // Resume polling
+      // Resume real-time updates
       if (processingJob.status === 'processing') {
         setIsPolling(true);
-        resumeJobPolling(processingJob.jobId);
       }
     }
   }, []);
 
-  // Resume polling for an existing job
-  const resumeJobPolling = useCallback(async (resumeJobId) => {
-    try {
-      console.log('Resuming polling for job:', resumeJobId);
+  // Handle real-time job updates
+  const handleJobUpdate = useCallback(async (data) => {
+    console.log('Job update received:', data);
+    
+    if (data.type === 'update') {
+      setStatus(data.status);
       
-      const finalStatus = await pollJobStatus(
-        resumeJobId,
-        (statusUpdate) => {
-          console.log('Status update:', statusUpdate);
-          setStatus(statusUpdate.status);
-          setExecution(statusUpdate.execution);
+      if (data.status === 'completed') {
+        setIsPolling(false);
+        setDownloadUrl(data.downloadUrl);
+        
+        // Automatically trigger download like sidebar does
+        if (data.downloadUrl) {
+          window.open(data.downloadUrl, '_blank');
         }
-      );
-
-      console.log('Final status:', finalStatus);
-      setStatus(finalStatus.status);
-      setExecution(finalStatus.execution);
-      setIsPolling(false);
-
-      if (finalStatus.status === 'done') {
-        // Check if download URL is already in the status response
-        if (finalStatus.downloadUrl) {
-          setDownloadUrl(finalStatus.downloadUrl);
-          
-          // Update local storage
-          updateStoredJob(resumeJobId, { 
-            status: 'done', 
-            downloadUrl: finalStatus.downloadUrl,
-            ready: true
-          });
-        } else {
-          // Fallback: Get download URL separately
-          const downloadData = await getDownloadUrl(resumeJobId);
-          setDownloadUrl(downloadData.url);
-          
-          // Update local storage
-          updateStoredJob(resumeJobId, { 
-            status: 'done', 
-            downloadUrl: downloadData.url,
-            ready: true
-          });
-        }
+        
+        updateStoredJob(data.jobId, {
+          status: 'done',
+          downloadUrl: data.downloadUrl,
+          ready: true
+        });
+      } else if (data.status === 'error') {
+        setIsPolling(false);
+        setError(data.error);
+        
+        updateStoredJob(data.jobId, {
+          status: 'error',
+          error: data.error
+        });
       }
-
-    } catch (error) {
-      console.error('Resume polling failed:', error);
-      setError(error.message);
-      setIsPolling(false);
-      
-      // Update local storage
-      updateStoredJob(resumeJobId, { 
-        status: 'error', 
-        error: error.message 
-      });
     }
   }, []);
+
+  // Fallback polling mechanism in case SSE fails
+  useEffect(() => {
+    if (!jobId || !isPolling || status !== 'processing') return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        console.log('Fallback polling job status for:', jobId);
+        const jobStatus = await getJobStatus(jobId);
+        
+        if (jobStatus.ready && jobStatus.status === 'done') {
+          console.log('Job completed via fallback polling');
+          setStatus('done');
+          setIsPolling(false);
+          
+          // Get download URL and trigger automatic download
+          try {
+            const downloadData = await getDownloadUrl(jobId);
+            setDownloadUrl(downloadData.url);
+            
+            // Automatically trigger download like sidebar does
+            window.open(downloadData.url, '_blank');
+            
+            updateStoredJob(jobId, {
+              status: 'done',
+              downloadUrl: downloadData.url,
+              ready: true
+            });
+          } catch (downloadError) {
+            console.error('Failed to get download URL:', downloadError);
+          }
+        } else if (jobStatus.status === 'error') {
+          console.log('Job failed via fallback polling');
+          setStatus('error');
+          setIsPolling(false);
+          setError(jobStatus.error || 'Job failed');
+          
+          updateStoredJob(jobId, {
+            status: 'error',
+            error: jobStatus.error || 'Job failed'
+          });
+        }
+      } catch (error) {
+        console.error('Fallback polling error:', error);
+        
+        // If job not found (404), stop polling and clean up
+        if (error instanceof ApiError && error.status === 404) {
+          console.log('Job not found, cleaning up and stopping polling');
+          setIsPolling(false);
+          
+          // Clean up invalid job from localStorage
+          localStorage.removeItem(`job_${jobId}`);
+          const jobList = JSON.parse(localStorage.getItem('pdf_csv_jobs') || '[]');
+          const updatedJobList = jobList.filter(id => id !== jobId);
+          localStorage.setItem('pdf_csv_jobs', JSON.stringify(updatedJobList));
+          
+          // Try to get download URL as fallback
+          try {
+            const downloadData = await getDownloadUrl(jobId);
+            setDownloadUrl(downloadData.url);
+            setStatus('done');
+            window.open(downloadData.url, '_blank');
+          } catch (downloadError) {
+            // If download also fails, reset to allow new upload
+            console.log('Download not available, resetting state');
+            resetState();
+            setError('Job not found. It may have expired. Please upload again.');
+          }
+        }
+      }
+    }, 5000); // Poll every 5 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [jobId, isPolling, status]);
+
+  // Use SSE for real-time updates
+  useJobEvents(jobId, handleJobUpdate);
 
   const resetState = useCallback(() => {
     setJobId(null);
@@ -148,39 +202,7 @@ function App() {
         console.log('n8n execution started:', response.execution);
       }
 
-      // Start polling for status
-      const finalStatus = await pollJobStatus(
-        response.jobId,
-        (statusUpdate) => {
-          console.log('Status update:', statusUpdate);
-          setStatus(statusUpdate.status);
-          setExecution(statusUpdate.execution);
-        }
-      );
-
-      console.log('Final status:', finalStatus);
-      setStatus(finalStatus.status);
-      setIsPolling(false);
-
-      if (finalStatus.status === 'done') {
-        // Check if download URL is already in the status response
-        if (finalStatus.downloadUrl) {
-          setDownloadUrl(finalStatus.downloadUrl);
-          console.log('Download URL ready from status:', finalStatus.downloadUrl);
-        } else {
-          // Fallback: Get download URL separately
-          try {
-            const downloadResponse = await getDownloadUrl(response.jobId);
-            setDownloadUrl(downloadResponse.url);
-            console.log('Download URL ready:', downloadResponse.filename);
-          } catch (downloadError) {
-            console.error('Failed to get download URL:', downloadError);
-            setError(`Conversion completed but download failed: ${downloadError.message}`);
-          }
-        }
-      } else if (finalStatus.status === 'error') {
-        setError(finalStatus.error || 'Conversion failed');
-      }
+      // Real-time updates will be handled by useJobEvents hook
 
     } catch (err) {
       console.error('Upload/polling error:', err);
@@ -195,12 +217,22 @@ function App() {
     }
   }, []);
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     if (downloadUrl) {
       console.log('Opening download URL:', downloadUrl);
       window.open(downloadUrl, '_blank');
+    } else if (jobId) {
+      // Fallback: try to get download URL if not available
+      try {
+        const downloadData = await getDownloadUrl(jobId);
+        window.open(downloadData.url, '_blank');
+        setDownloadUrl(downloadData.url);
+      } catch (error) {
+        console.error('Failed to get download URL:', error);
+        setError('Failed to download file. Please try again.');
+      }
     }
-  }, [downloadUrl]);
+  }, [downloadUrl, jobId]);
 
   const handleSidebarToggle = useCallback(() => {
     setSidebarOpen(prev => !prev);
@@ -275,7 +307,6 @@ function App() {
                                   setStatus(job.status);
                                   setExecution(job.execution);
                                   setIsPolling(true);
-                                  resumeJobPolling(job.jobId);
                                 }}
                                 className="px-3 py-1 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                               >
